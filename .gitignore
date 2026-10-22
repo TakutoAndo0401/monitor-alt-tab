@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+*.user
+*.log
+*.zip
+*.png
+publish/
+diagnostics.json
+test-results.txt
+settings.json
+settings.json.tmp
+smoke-result.txt

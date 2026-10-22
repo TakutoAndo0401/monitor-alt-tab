@@ -1,6 +1,6 @@
 # Monitor Alt Tab
 
-Windows 11向け、モニターごとのAlt＋Tab切り替えアプリ。C# / .NET 10 / WPF / Win32。個人用の初期版（0.1.0）です。
+Windows 11向け、モニターごとのAlt＋Tab切り替えアプリ。C# / .NET 10 / WPF / Win32。個人用の初期版（0.1.1）です。
 
 ## 起動と使い方
 
@@ -27,7 +27,8 @@ Windows 11向け、モニターごとのAlt＋Tab切り替えアプリ。C# / .N
 - Windowsが前面化を拒否する場合は通知します。前面化を強制する操作は行いません。
 - DWMプレビューは、アプリ・最小化・保護された画面内容によって表示できない／更新されない場合があります。
 - キーフックが他のツールやWindowsによって解除される場合は、一度終了して起動し直してください。
-- 初期版はウィンドウの自動フォーカスを奪わない表示を優先しています。高コントラストとアクセシビリティ名を備えますが、スクリーンリーダーでの選択読み上げは未検証です。
+- 選択中は切り替え画面自身がフォーカスを受け取り、対象へフォーカスを渡してから閉じます。高コントラストとアクセシビリティ名を備えますが、スクリーンリーダーでの選択読み上げは未検証です。
+- 明示的な切り替え要求が拒否された場合は、マウスを移動・クリックしない空の入力通知を1回送って再試行します。Microsoft PowerToysの`WindowHelpers`でも使われる方式です。ほかのアプリとの入力キュー結合、管理者化、システム設定変更は行いません。
 
 ## プライバシー
 
@@ -46,6 +47,7 @@ dotnet restore --configfile NuGet.Config -p:NuGetAudit=false
 dotnet build -c Release --no-restore
 dotnet bin/Release/net10.0-windows/MonitorAltTab.dll --self-test
 dotnet bin/Release/net10.0-windows/MonitorAltTab.dll --diagnose
+dotnet bin/Release/net10.0-windows/MonitorAltTab.dll --activation-test
 ```
 
 `build.ps1` でもビルドと自己テストを実行できます。`build.ps1 -Publish` はMicrosoft公式NuGetフィードから実行用パッケージを取得し、`publish` フォルダーへWindows x64の自己完結型EXEを作ります。初回の復元・ビルド時に.NET SDK自体がユーザー用キャッシュや設定ファイルを作る場合があります。
@@ -56,4 +58,6 @@ dotnet bin/Release/net10.0-windows/MonitorAltTab.dll --diagnose
 
 ## 構成
 
-`Native.cs`：Win32とCOMの宣言。`Catalog.cs`：候補の定期収集と最近使った順。`Model.cs`：設定・選択規則・キー状態。`KeyboardHook.cs`：専用スレッドとフック。`SwitcherWindow.cs`：切り替え画面とDWMプレビュー。`SettingsWindow.cs`：設定画面。`Program.cs`：常駐、切り替え、安全な終了。`SelfTests.cs`：自己テストと診断。
+`Native.cs`：Win32とCOMの宣言。`Catalog.cs`：候補の定期収集と最近使った順。`Model.cs`：設定・選択規則・キー状態。`KeyboardHook.cs`：専用スレッドとフック。`SwitcherWindow.cs`：切り替え画面とDWMプレビュー。`SettingsWindow.cs`：設定画面。`Program.cs`：常駐、切り替え、安全な終了。`ForegroundActivation.cs`：前面化要求。`SelfTests.cs`：自己テストと診断。`ActivationTests.cs`：別プロセスを使う前面化・復元の回帰検証。
+
+前面化方式の参考：[Microsoft PowerToysのWindowHelpers](https://github.com/microsoft/PowerToys/blob/main/src/common/ManagedCommon/WindowHelpers.cs)、[SetForegroundWindowの制約](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)。

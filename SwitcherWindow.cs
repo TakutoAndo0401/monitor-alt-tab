@@ -37,6 +37,7 @@ internal sealed class SwitcherWindow : Window
     private nint hwnd;
     private Brush foreground = Brushes.White, muted = Brushes.Gray, cardBackground = Brushes.Black, accent = Brushes.DodgerBlue;
     internal Action<WindowEntry>? Clicked;
+    internal nint Handle => hwnd;
     internal long SessionId => session?.Id ?? -1;
     internal SwitcherWindow(Settings settings)
     {
@@ -47,7 +48,7 @@ internal sealed class SwitcherWindow : Window
         {
             hwnd = new WindowInteropHelper(this).Handle;
             long ex = (long)Native.GetWindowLongPtr(hwnd, -20);
-            Native.SetWindowLongPtr(hwnd, -20, (nint)(ex | 0x08000080));
+            Native.SetWindowLongPtr(hwnd, -20, (nint)((ex & ~0x08000000L) | 0x80));
             int corner = 2; Native.DwmSetWindowAttribute(hwnd, 33, ref corner, 4);
             HwndSource.FromHwnd(hwnd)?.AddHook(WndProc);
         };
@@ -57,10 +58,11 @@ internal sealed class SwitcherWindow : Window
     }
     private nint WndProc(nint h, int message, nint wp, nint lp, ref bool handled)
     {
-        if (message == 0x21) { handled = true; return 3; } // MA_NOACTIVATE
+        // Alt release belongs to the active switcher, rather than opening an app menu.
+        if (message == 0x112 && ((long)wp & 0xFFF0) == 0xF100) { handled = true; return 0; }
         return 0;
     }
-    internal void Present(SwitchSession value, Settings config, bool sample = false)
+    internal bool Present(SwitchSession value, Settings config, bool sample = false)
     {
         session = value; settings = config; ClearThumbnails(); cards.Clear(); previewHosts.Clear();
         bool light = Palette.Light(config);
@@ -105,6 +107,9 @@ internal sealed class SwitcherWindow : Window
             foreach (var host in previewHosts)
                 if (Native.DwmRegisterThumbnail(hwnd, host.Entry.Handle, out nint thumb) == 0) thumbnails.Add(thumb); else thumbnails.Add(0);
         UpdateThumbnails();
+        // Own the foreground during a real switch session so the final Alt release
+        // reaches this process. Transfer to the target before hiding this window.
+        return sample || ForegroundActivation.Request(hwnd);
     }
     private Border BuildCard(WindowEntry entry, bool sample)
     {

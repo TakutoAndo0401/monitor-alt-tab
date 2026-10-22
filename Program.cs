@@ -18,6 +18,8 @@ internal static class Program
     {
         if (args.Contains("--self-test")) return SelfTests.Run(args);
         if (args.Contains("--diagnose")) return SelfTests.Diagnose(args);
+        if (args.Contains("--activation-test")) return ActivationTests.Run(args);
+        if (args.Contains("--activation-fixture")) return ActivationTests.Fixture(args);
         if (args.Contains("--render-preview")) return RenderPreview(args);
         using var mutex = new Mutex(true, @"Local\MonitorAltTab.68D2D7F1", out bool first);
         if (!first)
@@ -72,7 +74,7 @@ internal sealed class SwitcherApp : Application
     {
         catalog = new Catalog(settings);
         overlay = new SwitcherWindow(settings);
-        overlay.Clicked = entry => { if (active is { } a) { dismissedId = a.Id; keyboard?.CancelActive(); overlay.Hide(); active = null; Activate(entry, a); } };
+        overlay.Clicked = entry => { if (active is { } a) { dismissedId = a.Id; keyboard?.CancelActive(); active = null; try { Activate(entry, a); } finally { overlay.Hide(); } } };
         keyboard = new KeyboardHook(catalog, settings, signal => Dispatcher.BeginInvoke(() => Handle(signal)), () => Dispatcher.BeginInvoke(TogglePause));
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("設定", null, (_, _) => Dispatcher.BeginInvoke(OpenSettings));
@@ -118,7 +120,7 @@ internal sealed class SwitcherApp : Application
                 blocked |= Rules.Fullscreen(rect, info.Monitor, false, (long)Native.GetWindowLongPtr(foreground, -16));
         }
         keyboard.BlockForeground(foreground, blocked);
-        if (active is { } a && foreground != a.Original && foreground != 0) Cancel();
+        if (active is { } a && foreground != a.Original && foreground != overlay?.Handle && foreground != 0) Cancel();
         keyboard.Pulse();
     }
     private void Handle(SwitchSignal signal)
@@ -128,14 +130,18 @@ internal sealed class SwitcherApp : Application
         if (paused || desktopUnavailable) { dismissedId = value.Id; return; }
         switch (signal.Gesture)
         {
-            case Gesture.Begin: active = value; overlay!.Present(value, settings); break;
+            case Gesture.Begin:
+                active = value;
+                if (!overlay!.Present(value, settings)) { Cancel(); Notify("切り替え画面をアクティブにできませんでした。一度終了して起動し直してください。"); }
+                break;
             case Gesture.Next:
                 if (active?.Id == value.Id) { active = value; overlay!.Select(value.Index); } break;
             case Gesture.Cancel: Cancel(); break;
             case Gesture.Commit:
                 if (active?.Id != value.Id) return;
-                overlay!.Hide(); active = null; dismissedId = value.Id;
-                if (value.Index >= 0 && value.Index < value.Windows.Length) Activate(value.Windows[value.Index], value);
+                active = null; dismissedId = value.Id;
+                try { if (value.Index >= 0 && value.Index < value.Windows.Length) Activate(value.Windows[value.Index], value); }
+                finally { overlay!.Hide(); }
                 break;
         }
     }
@@ -152,19 +158,33 @@ internal sealed class SwitcherApp : Application
         }
         catch (COMException) { Notify("仮想デスクトップを確認できませんでした。"); return; }
         finally { if (desktops != null) Marshal.ReleaseComObject(desktops); }
+        // Revalidate immediately before making the user-requested foreground transfer.
+        // A different foreground means the user has already moved on to another app.
+        nint before = Native.GetForegroundWindow();
+        if (before != 0 && before != session.Original && before != entry.Handle && before != overlay?.Handle) return;
         if (Native.IsIconic(entry.Handle)) Native.ShowWindowAsync(entry.Handle, 9);
-        bool requested = Native.SetForegroundWindow(entry.Handle);
-        var check = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        bool requested = ForegroundActivation.Request(entry.Handle);
+        var check = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
         check.Tick += (_, _) =>
         {
             check.Stop();
+            if (active != null || dismissedId != session.Id) return;
             nint actual = Native.GetForegroundWindow();
-            if (actual != entry.Handle && Native.GetAncestor(actual, 3) != Native.GetAncestor(entry.Handle, 3))
+            if (!ForegroundActivation.Matches(entry.Handle, actual))
                 Notify(requested ? "切り替えを確認できませんでした。対象をタスクバーから選択してください。" : "Windowsが前面への切り替えを許可しませんでした。対象をタスクバーから選択してください。");
         }; check.Start();
     }
     private void Notify(string message) { if (tray == null) return; tray.BalloonTipTitle = "Monitor Alt Tab"; tray.BalloonTipText = message; tray.ShowBalloonTip(4000); }
-    private void Cancel() { if (active != null) dismissedId = Math.Max(dismissedId, active.Id); active = null; overlay?.Hide(); keyboard?.CancelActive(); }
+    private void Cancel()
+    {
+        if (active is { } previous)
+        {
+            dismissedId = Math.Max(dismissedId, previous.Id);
+            if (Native.GetForegroundWindow() == overlay?.Handle && Native.IsWindow(previous.Original))
+                ForegroundActivation.Request(previous.Original);
+        }
+        active = null; overlay?.Hide(); keyboard?.CancelActive();
+    }
     private void TogglePause()
     {
         paused = !paused; Cancel(); keyboard?.SetEnabled(!paused && !desktopUnavailable);

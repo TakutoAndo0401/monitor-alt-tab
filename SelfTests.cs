@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 
@@ -16,6 +17,17 @@ internal static class SelfTests
         void Assert(bool ok, string name) { if (!ok) throw new InvalidOperationException(name); results.Add("PASS " + name); }
         try
         {
+            Assert(Marshal.SizeOf<Native.Input>() == 40, "native INPUT has correct x64 ABI size");
+            var noOpInput = new Native.Input();
+            Assert(noOpInput.Type == 0 && noOpInput.Data.Mouse.Flags == 0 && noOpInput.Data.Mouse.X == 0 && noOpInput.Data.Mouse.Y == 0 && noOpInput.Data.Mouse.Data == 0, "foreground fallback input has no click or movement");
+            int attempts = 0, notifications = 0;
+            Assert(ForegroundActivation.RequestCore(() => { attempts++; return true; }, () => { notifications++; return true; }) && attempts == 1 && notifications == 0, "foreground success does not inject input");
+            attempts = notifications = 0;
+            Assert(ForegroundActivation.RequestCore(() => ++attempts == 2, () => { notifications++; return true; }) && attempts == 2 && notifications == 1, "foreground denial retries once after no-action input");
+            attempts = notifications = 0;
+            Assert(!ForegroundActivation.RequestCore(() => { attempts++; return false; }, () => { notifications++; return false; }) && attempts == 1 && notifications == 1, "blocked input does not retry activation");
+            attempts = notifications = 0;
+            Assert(!ForegroundActivation.RequestCore(() => { attempts++; return false; }, () => { notifications++; return true; }) && attempts == 2 && notifications == 1, "persistent denial stops after one retry");
             Assert(Rules.InitialIndex(new nint[] { 1, 2, 3 }, 1, false) == 1, "MRU skips current window");
             Assert(Rules.InitialIndex(new nint[] { 1, 2, 3 }, 1, true) == 2, "reverse wraps from current");
             Assert(Rules.InitialIndex(new nint[] { 2, 3 }, 1, false) == 0, "other-monitor foreground starts at newest");

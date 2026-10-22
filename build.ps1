@@ -3,7 +3,10 @@ $ErrorActionPreference = 'Stop'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
 $sdkCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-$sdk = if ($sdkCommand) { $sdkCommand.Source } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Codex\tools\dotnet\dotnet.exe' }
+$sdk = if ($sdkCommand) { $sdkCommand.Source } else { '' }
+if (!$sdk -or !(& $sdk --list-sdks | Where-Object { $_ -match '^10\.' })) {
+    $sdk = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Codex\tools\dotnet\dotnet.exe'
+}
 if (!(Test-Path -LiteralPath $sdk)) { throw '.NET 10 SDKが必要です。' }
 Push-Location $PSScriptRoot
 try {

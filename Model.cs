@@ -36,6 +36,14 @@ internal sealed record CatalogSnapshot(WindowEntry[] Windows, string? Warning)
 
 internal static class Rules
 {
+    internal static bool SameWindowCards(WindowEntry[] a, WindowEntry[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+            if (a[i].Handle != b[i].Handle || a[i].ProcessId != b[i].ProcessId || a[i].Title != b[i].Title ||
+                a[i].AppName != b[i].AppName || a[i].Executable != b[i].Executable || a[i].Minimized != b[i].Minimized) return false;
+        return true;
+    }
     internal static int Wrap(int value, int count) => count == 0 ? -1 : ((value % count) + count) % count;
     internal static int InitialIndex(nint[] handles, nint foreground, bool reverse)
     {
@@ -63,10 +71,13 @@ internal readonly record struct KeyDecision(bool Consume, Gesture Gesture);
 internal sealed class KeyboardState
 {
     private bool leftAlt, rightAlt, leftCtrl, rightCtrl, leftShift, rightShift, leftWin, rightWin, tabOwned, escapeOwned;
+    private bool systemSession;
+    internal bool IsSystemSession => systemSession;
     internal bool Active { get; private set; }
     internal bool Reverse => leftShift || rightShift;
+    internal bool IsSwitchChord(bool altFlag) => (leftAlt || rightAlt || altFlag) && !leftCtrl && !rightCtrl && !leftWin && !rightWin;
     internal void RefreshModifiers(bool la, bool ra, bool lc, bool rc, bool ls, bool rs, bool lw, bool rw)
-    { leftAlt = la; rightAlt = ra; leftCtrl = lc; rightCtrl = rc; leftShift = ls; rightShift = rs; leftWin = lw; rightWin = rw; }
+    { leftAlt = la; rightAlt = ra; leftCtrl = lc; rightCtrl = rc; leftShift = ls; rightShift = rs; leftWin = lw; rightWin = rw; if (!la && !ra) systemSession = false; }
     internal void Cancel() => Active = false;
     internal KeyDecision Handle(int key, bool down, bool altFlag, bool canBegin, bool healthy)
     {
@@ -81,9 +92,11 @@ internal sealed class KeyboardState
             case 0x5B: leftWin = down; break;
             case 0x5C: rightWin = down; break;
         }
+        if (!leftAlt && !rightAlt && !altFlag) systemSession = false;
         if (!healthy && Active)
         {
             Active = false;
+            systemSession = true;
             bool ownedRelease = !down && ((key == 9 && tabOwned) || (key == 27 && escapeOwned));
             if (key == 9 && !down) tabOwned = false;
             if (key == 27 && !down) escapeOwned = false;
@@ -98,7 +111,8 @@ internal sealed class KeyboardState
         { Active = false; return new(false, Gesture.Cancel); }
         if (down && key == 9 && (leftAlt || rightAlt || altFlag) && !leftCtrl && !rightCtrl && !leftWin && !rightWin)
         {
-            if (!Active && (!healthy || !canBegin)) return default;
+            // Never take over a chord whose first Tab was already passed to Windows.
+            if (!Active && (systemSession || !healthy || !canBegin)) { systemSession = true; return default; }
             tabOwned = true;
             if (Active) return new(true, Gesture.Next);
             Active = true; return new(true, Gesture.Begin);

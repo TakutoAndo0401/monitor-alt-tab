@@ -17,6 +17,30 @@ internal static class SelfTests
         void Assert(bool ok, string name) { if (!ok) throw new InvalidOperationException(name); results.Add("PASS " + name); }
         try
         {
+            Assert(SwitchAvailability.IsResponsive(750) && SwitchAvailability.IsResponsive(1499), "temporary UI stalls up to 1499ms remain responsive");
+            Assert(!SwitchAvailability.IsResponsive(1500) && !SwitchAvailability.IsResponsive(2000), "1500ms UI timeout still falls back safely");
+            Assert(SwitchAvailability.Reasons(true, 1600, true, false, false, false) ==
+                (SwitchBypassReason.UiUnresponsive | SwitchBypassReason.ForegroundChanged), "fallback records simultaneous timeout and foreground mismatch");
+            Assert(SwitchAvailability.Reasons(false, 100, false, true, true, true) ==
+                (SwitchBypassReason.Disabled | SwitchBypassReason.CatalogUnavailable | SwitchBypassReason.ForegroundBlocked | SwitchBypassReason.FullscreenExcluded), "fallback distinguishes non-timeout reasons");
+            string logPath = Path.Combine(Path.GetDirectoryName(Output(args, "test-results.txt"))!, "switch-log-test-" + Guid.NewGuid().ToString("N") + ".log");
+            try
+            {
+                using (var log = new SwitchDiagnostics(logPath))
+                {
+                    for (int i = 0; i < 1000; i++) log.Record(SwitchBypassReason.ForegroundChanged, 42);
+                    log.Flush();
+                    var lines = File.ReadAllLines(logPath);
+                    Assert(lines.Length == SwitchDiagnostics.MaxPending && lines.All(x => x.Contains("reason=ForegroundChanged heartbeatAgeMs=42 limitMs=1500")), "fallback logging bounds queued events and records only fixed diagnostic fields");
+                    File.WriteAllText(logPath, new string('x', (int)SwitchDiagnostics.MaxFileBytes));
+                    log.Record(SwitchBypassReason.UiUnresponsive, 1500); log.Flush();
+                    Assert(new FileInfo(logPath + ".previous").Length == SwitchDiagnostics.MaxFileBytes && File.ReadAllLines(logPath).Length == 1, "fallback log rotates with one previous file");
+                }
+                using var unavailable = new SwitchDiagnostics(Path.Combine(logPath, "missing", "diagnostics.log"));
+                unavailable.Record(SwitchBypassReason.Disabled, 0); unavailable.Flush();
+                Assert(true, "unwritable diagnostic destination does not interrupt switching");
+            }
+            finally { File.Delete(logPath); File.Delete(logPath + ".previous"); }
             Assert(Marshal.SizeOf<Native.Input>() == 40, "native INPUT has correct x64 ABI size");
             var noOpInput = new Native.Input();
             Assert(noOpInput.Type == 0 && noOpInput.Data.Mouse.Flags == 0 && noOpInput.Data.Mouse.X == 0 && noOpInput.Data.Mouse.Y == 0 && noOpInput.Data.Mouse.Data == 0, "foreground fallback input has no click or movement");
@@ -59,6 +83,26 @@ internal static class SelfTests
             Assert(unhealthy.Handle(9, true, true, true, false).Gesture == Gesture.Cancel && !unhealthy.Active, "stalled UI cancels session");
             var bypass = new KeyboardState(); Assert(!bypass.Handle(9, true, true, false, true).Consume, "excluded foreground bypasses hook");
             Assert(!bypass.Handle(9, true, true, true, false).Consume, "unhealthy UI leaves system Alt Tab available");
+            var focusRace = new KeyboardState(); focusRace.Handle(0xA4, true, true, true, true);
+            Assert(!focusRace.Handle(9, true, true, false, true).Consume &&
+                !focusRace.Handle(9, true, true, true, true).Consume && !focusRace.Active, "recovered foreground policy never takes over Windows key repeat");
+            focusRace.Handle(9, false, true, true, true);
+            Assert(!focusRace.Handle(9, true, true, true, true).Consume, "Windows owns subsequent Tab presses until Alt is released");
+            focusRace.Handle(9, false, true, true, true); focusRace.Handle(0xA4, false, false, true, true);
+            focusRace.Handle(0xA4, true, true, true, true);
+            Assert(focusRace.Handle(9, true, true, true, true).Gesture == Gesture.Begin, "fresh Alt chord can use custom switcher again");
+            var candidate = new WindowEntry(1, 123, 1, "", "Game", null, false, true, 1);
+            Assert(Rules.SameWindowCards(new[] { candidate }, new[] { candidate with { LastUsed = 999 } }), "MRU timestamp alone does not rebuild unchanged cards");
+            Assert(!Rules.SameWindowCards(new[] { candidate }, new[] { candidate with { Title = "updated" } }) &&
+                !Rules.SameWindowCards(new[] { candidate }, new[] { candidate with { ProcessId = 456 } }), "title change or recycled HWND refreshes card content");
+            Assert(!Rules.SameWindowCards(new[] { candidate }, new[] { candidate with { Minimized = true } }), "minimized preview placeholder is refreshed");
+            var secondCandidate = candidate with { Handle = 2 };
+            Assert(!Rules.SameWindowCards(new[] { candidate, secondCandidate }, new[] { secondCandidate, candidate }), "candidate order changes rebuild cards in the correct order");
+            Assert(SwitchAvailability.CandidateAllows(candidate, 123, new Settings { ExcludeFullscreen = false }), "recently focused known window can bypass stale UI foreground policy");
+            Assert(!SwitchAvailability.CandidateAllows(candidate, 456, new Settings { ExcludeFullscreen = false }), "recycled foreground HWND is not trusted");
+            Assert(!SwitchAvailability.CandidateAllows(candidate, 123, new Settings { ExcludeFullscreen = false, ExcludedApps = new[] { "game.exe" } }), "fresh exclusion still blocks cached candidate");
+            Assert(!SwitchAvailability.CandidateAllows(candidate, 123, new Settings()) &&
+                !SwitchAvailability.CandidateAllows(null, 123, new Settings()), "fullscreen exclusion and unknown foreground remain protected");
             var both = new KeyboardState(); both.Handle(0xA4, true, true, true, true); both.Handle(0xA5, true, true, true, true); both.Handle(9, true, true, true, true);
             Assert(both.Handle(0xA4, false, true, true, true).Gesture == Gesture.None && both.Active, "one of two Alt releases does not commit");
             Assert(both.Handle(0xA5, false, false, true, true).Gesture == Gesture.Commit, "last Alt release commits");

@@ -76,6 +76,7 @@ internal sealed class SwitcherApp : Application
         overlay = new SwitcherWindow(settings);
         overlay.Clicked = entry => { if (active is { } a) { dismissedId = a.Id; keyboard?.CancelActive(); active = null; try { Activate(entry, a); } finally { overlay.Hide(); } } };
         keyboard = new KeyboardHook(catalog, settings, signal => Dispatcher.BeginInvoke(() => Handle(signal)), () => Dispatcher.BeginInvoke(TogglePause));
+        overlay.Trace = keyboard.Trace;
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("設定", null, (_, _) => Dispatcher.BeginInvoke(OpenSettings));
         pauseItem = new Forms.ToolStripMenuItem("一時停止  Ctrl+Alt+F12", null, (_, _) => Dispatcher.BeginInvoke(TogglePause)); menu.Items.Add(pauseItem);
@@ -104,6 +105,7 @@ internal sealed class SwitcherApp : Application
         bool available = Native.InputDesktopAccessible();
         if (desktopUnavailable != !available)
         {
+            keyboard.Trace(available ? SwitchDiagnosticEvent.DesktopAvailable : SwitchDiagnosticEvent.DesktopUnavailable);
             desktopUnavailable = !available; Cancel(); keyboard.SetEnabled(!paused && !desktopUnavailable);
         }
         var foreground = Native.GetForegroundWindow();
@@ -120,7 +122,8 @@ internal sealed class SwitcherApp : Application
                 blocked |= Rules.Fullscreen(rect, info.Monitor, false, (long)Native.GetWindowLongPtr(foreground, -16));
         }
         keyboard.BlockForeground(foreground, blocked);
-        if (active is { } a && foreground != a.Original && foreground != overlay?.Handle && foreground != 0) Cancel();
+        if (active is { } a && foreground != a.Original && foreground != overlay?.Handle && foreground != 0)
+        { keyboard.Trace(SwitchDiagnosticEvent.ForegroundMovedAway); Cancel(); }
         keyboard.Pulse();
     }
     private void Handle(SwitchSignal signal)
@@ -132,7 +135,10 @@ internal sealed class SwitcherApp : Application
         {
             case Gesture.Begin:
                 active = value;
-                if (!overlay!.Present(value, settings)) { Cancel(); Notify("切り替え画面をアクティブにできませんでした。一度終了して起動し直してください。"); }
+                keyboard?.Trace(SwitchDiagnosticEvent.UiDisplayStart);
+                bool presented = overlay!.Present(value, settings);
+                keyboard?.Trace(presented ? SwitchDiagnosticEvent.UiDisplayReady : SwitchDiagnosticEvent.UiActivationRejected);
+                if (!presented) { Cancel(); Notify("切り替え画面をアクティブにできませんでした。一度終了して起動し直してください。"); }
                 break;
             case Gesture.Next:
                 if (active?.Id == value.Id) { active = value; overlay!.Select(value.Index); } break;
@@ -141,7 +147,7 @@ internal sealed class SwitcherApp : Application
                 if (active?.Id != value.Id) return;
                 active = null; dismissedId = value.Id;
                 try { if (value.Index >= 0 && value.Index < value.Windows.Length) Activate(value.Windows[value.Index], value); }
-                finally { overlay!.Hide(); }
+                finally { overlay!.Hide(); keyboard?.Trace(SwitchDiagnosticEvent.UiDisplayHidden); }
                 break;
         }
     }
@@ -179,6 +185,7 @@ internal sealed class SwitcherApp : Application
     {
         if (active is { } previous)
         {
+            keyboard?.Trace(SwitchDiagnosticEvent.UiSessionCancelled);
             dismissedId = Math.Max(dismissedId, previous.Id);
             if (Native.GetForegroundWindow() == overlay?.Handle && Native.IsWindow(previous.Original))
                 ForegroundActivation.Request(previous.Original);
@@ -188,6 +195,7 @@ internal sealed class SwitcherApp : Application
     private void TogglePause()
     {
         paused = !paused; Cancel(); keyboard?.SetEnabled(!paused && !desktopUnavailable);
+        keyboard?.Trace(paused ? SwitchDiagnosticEvent.Paused : SwitchDiagnosticEvent.Resumed);
         if (pauseItem != null) pauseItem.Text = paused ? "再開  Ctrl+Alt+F12" : "一時停止  Ctrl+Alt+F12";
         if (tray != null) tray.Text = paused ? "Monitor Alt Tab — 一時停止中" : "Monitor Alt Tab — 有効";
         if (settingsWindow != null) settingsWindow.Title = paused ? "Monitor Alt Tab — 一時停止中" : "Monitor Alt Tab — 設定";

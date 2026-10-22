@@ -16,6 +16,8 @@ internal sealed class Catalog : IDisposable
     private CatalogSnapshot snapshot = CatalogSnapshot.Empty;
     private Settings settings;
     private volatile bool stop;
+    private int disposed;
+    private readonly ManualResetEventSlim stopping = new(false);
     private IVirtualDesktopManager? desktops;
     internal CatalogSnapshot Snapshot => Volatile.Read(ref snapshot);
     internal bool IsStopped => !worker.IsAlive;
@@ -40,7 +42,7 @@ internal sealed class Catalog : IDisposable
             {
                 try { Volatile.Write(ref snapshot, Read()); }
                 catch { Volatile.Write(ref snapshot, CatalogSnapshot.Empty with { Warning = "候補を更新できません。一時停止して再開してください。" }); }
-                for (int i = 0; i < 5 && !stop; i++) Thread.Sleep(100);
+                stopping.Wait(500);
             }
         }
         finally { if (desktops != null) Marshal.ReleaseComObject(desktops); }
@@ -49,6 +51,7 @@ internal sealed class Catalog : IDisposable
     {
         var list = new List<WindowEntry>();
         var seen = new HashSet<nint>();
+        var screens = new Dictionary<nint, Native.MonitorInfo>();
         var config = Volatile.Read(ref settings);
         string? warning = desktops == null ? "仮想デスクトップ判定が利用できないため、切り替えを停止しています。" : null;
         // Fail closed when the public virtual desktop API is unavailable.
@@ -92,7 +95,7 @@ internal sealed class Catalog : IDisposable
             if (Rules.Excluded(process.Name, config.ExcludedApps)) return true;
             nint monitor = Native.MonitorFromWindow(hwnd, 2);
             bool minimized = Native.IsIconic(hwnd);
-            var screen = Native.Monitor(monitor);
+            if (!screens.TryGetValue(monitor, out var screen)) screens[monitor] = screen = Native.Monitor(monitor);
             Native.GetWindowRect(hwnd, out var rect);
             bool full = Rules.Fullscreen(rect, screen.Monitor, minimized, (long)Native.GetWindowLongPtr(hwnd, -16));
             long stamp = history.TryGetValue(hwnd, out var h) && h.Pid == pid ? h.Stamp : -rank;
@@ -103,5 +106,9 @@ internal sealed class Catalog : IDisposable
         if (names.Count > 512) names.Clear();
         return new(list.ToArray(), warning);
     }
-    public void Dispose() { stop = true; worker.Join(1500); }
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        stop = true; stopping.Set(); if (worker.Join(1500)) stopping.Dispose();
+    }
 }
